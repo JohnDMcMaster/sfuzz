@@ -289,9 +289,16 @@ class SFuzz:
 
     def mkser(self, baudrate):
         self.ser = serial.Serial(self.port,
-                                 timeout=0.01,
                                  baudrate=baudrate,
+                                 bytesize=serial.EIGHTBITS,
+                                 parity=serial.PARITY_NONE,
+                                 stopbits=serial.STOPBITS_ONE,
+                                 rtscts=False,
+                                 dsrdtr=False,
+                                 xonxoff=False,
+                                 timeout=0.01,
                                  writeTimeout=0)
+
         self.flushInput()
 
     def get_tx(self, chunk_size):
