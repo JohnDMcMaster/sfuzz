@@ -330,9 +330,7 @@ class SFuzz:
                 [random.randint(0, 255) for _i in range(chunk_size)])
 
     def run(self):
-        baudrate = 115200
         print("Starting")
-        print("baudrate: %s" % baudrate)
         print("ASCII: %s" % self.ascii)
 
         itr = 0
@@ -345,7 +343,7 @@ class SFuzz:
         stopbits = None
         while True:
             if itr % open_interval == 0:
-                baudrate = 115200
+                baudrate = random.choice([9600, 19200, 38400, 115200])
                 parity = random.choice([
                     serial.PARITY_NONE, serial.PARITY_EVEN, serial.PARITY_ODD,
                     serial.PARITY_MARK, serial.PARITY_SPACE
