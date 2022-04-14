@@ -247,6 +247,7 @@ def mkdir_p(path):
 class SFuzz:
     def __init__(self, port=None, verbose=None):
         self.verbose = verbose
+        self.ser = None
 
         self.port = port
         if self.port is None:
@@ -287,12 +288,19 @@ class SFuzz:
             tstart = time.time()
             ret += c
 
-    def mkser(self, baudrate):
+    def mkser(self,
+              baudrate=None,
+              bytesize=serial.EIGHTBITS,
+              parity=serial.PARITY_NONE,
+              stopbits=serial.STOPBITS_ONE):
+        if self.ser:
+            self.ser.close()
+            self.ser = None
         self.ser = serial.Serial(self.port,
                                  baudrate=baudrate,
-                                 bytesize=serial.EIGHTBITS,
-                                 parity=serial.PARITY_NONE,
-                                 stopbits=serial.STOPBITS_ONE,
+                                 bytesize=bytesize,
+                                 parity=parity,
+                                 stopbits=stopbits,
                                  rtscts=False,
                                  dsrdtr=False,
                                  xonxoff=False,
@@ -326,13 +334,31 @@ class SFuzz:
         print("Starting")
         print("baudrate: %s" % baudrate)
         print("ASCII: %s" % self.ascii)
-        self.mkser(baudrate)
 
         itr = 0
+        open_interval = 10
         print_interval = 80
         tx_bytes = 0
         rx_bytes = 0
+        baudrate = None
+        parity = None
+        stopbits = None
         while True:
+            if itr % open_interval == 0:
+                baudrate = 115200
+                parity = random.choice([
+                    serial.PARITY_NONE, serial.PARITY_EVEN, serial.PARITY_ODD,
+                    serial.PARITY_MARK, serial.PARITY_SPACE
+                ])
+                stopbits = random.choice([
+                    serial.STOPBITS_ONE, serial.STOPBITS_ONE_POINT_FIVE,
+                    serial.STOPBITS_TWO
+                ])
+                print("")
+                print("baudrate=%s, parity=%s, stopbits=%s" %
+                      (baudrate, parity, stopbits))
+                self.mkser(baudrate=baudrate, parity=parity, stopbits=stopbits)
+
             if itr % print_interval == 0:
                 print("")
                 print("iter %03u tx bytes: %u, rx bytes %u" %
@@ -361,6 +387,8 @@ class SFuzz:
             rx_bytes += len(rx)
             print("")
             rx = bytearray()
+            print("baudrate=%s, parity=%s, stopbits=%s" %
+                  (baudrate, parity, stopbits))
             hexdump(tx, label="tx")
             hexdump(rx, label="rx")
 
