@@ -18,6 +18,23 @@ class Timeout(Exception):
     pass
 
 
+def add_bool_arg(parser, yes_arg, default=False, **kwargs):
+    dashed = yes_arg.replace('--', '')
+    dest = dashed.replace('-', '_')
+    parser.add_argument(
+        yes_arg, dest=dest, action='store_true', default=default, **kwargs)
+    parser.add_argument(
+        '--no-' + dashed, dest=dest, action='store_false', **kwargs)
+
+def bytes2AnonArray(bytes_data):
+    byte_str = "b\""
+
+    for i in range(len(bytes_data)):
+        if i and i % 16 == 0:
+            byte_str += "\"\n            b\""
+        byte_str += "\\x%02X" % (bytes_data[i], )
+    return byte_str + "\""
+
 # Print timestamps in front of all output messages
 class IOTimestamp(object):
     def __init__(self, obj=sys, name='stdout'):
@@ -245,7 +262,7 @@ def mkdir_p(path):
 
 
 class SFuzz:
-    def __init__(self, port=None, verbose=None):
+    def __init__(self, port=None, baudrates=None, ascii=False, parities=None, stopbitss=None, verbose=None):
         self.verbose = verbose
         self.ser = None
 
@@ -258,38 +275,30 @@ class SFuzz:
             verbose = os.getenv("VERBOSE", "N") == "Y"
         self.verbose and print("port: %s" % self.port)
         self.ser = None
-        self.ascii = True
-        # \r\n
-        self.ascii_crnl = False
-        self.ascii_newline = True
-        self.chunk_size = random.randint(1, 32)
-        if 0:
-            self.baudrates = [9600, 19200, 38400, 115200]
-            # rx all 0s
-            self.baudrates = [115200]
-            # some suspicous echos back
-            self.baudrates = [9600]
-            # like corrupted values back
-            self.baudrates = [19200]
-            # like corrupted values back
-            self.baudrates = [38400]
+        self.rtsctss = [False]
+        self.dsrdtrs = [False]
+        self.xonxoffs = [False]
+        self.ascii = ascii
+        self.ascii_newlines = ["\r", "\n", "\r\n"]
 
-            self.ascii = False
-            # pretty sure this is right
-            self.baudrates = [9600]
+        self.baudrates = [9600, 19200, 38400, 115200]
+        self.parities = [
+                    serial.PARITY_NONE, serial.PARITY_EVEN, serial.PARITY_ODD,
+                    serial.PARITY_MARK, serial.PARITY_SPACE
+                ]
+        self.stopbitss = [
+                    serial.STOPBITS_ONE, serial.STOPBITS_ONE_POINT_FIVE,
+                    serial.STOPBITS_TWO
+                ]
 
-            self.parities = [serial.PARITY_NONE]
-            self.stopbitss = [serial.STOPBITS_ONE]
-        else:
-            self.baudrates = [9600, 19200, 38400, 115200]
-            self.parities = [
-                        serial.PARITY_NONE, serial.PARITY_EVEN, serial.PARITY_ODD,
-                        serial.PARITY_MARK, serial.PARITY_SPACE
-                    ]
-            self.stopbitss = [
-                        serial.STOPBITS_ONE, serial.STOPBITS_ONE_POINT_FIVE,
-                        serial.STOPBITS_TWO
-                    ]
+        if baudrates is not None:
+            self.baudrates = baudrates
+        if ascii is not None:
+            self.ascii = ascii
+        if parities is not None:
+            self.parities = parities
+        if stopbitss is not None:
+            self.stopbitss = stopbitss
 
     def flushInput(self, timeout=0.1, max_size=1024):
         # Try to get rid of previous command in progress, if any
@@ -320,7 +329,10 @@ class SFuzz:
               baudrate=None,
               bytesize=serial.EIGHTBITS,
               parity=serial.PARITY_NONE,
-              stopbits=serial.STOPBITS_ONE):
+              stopbits=serial.STOPBITS_ONE,
+              rtscts=False,
+              dsrdtr=False,
+              xonxoff=False):
         if self.ser:
             self.ser.close()
             self.ser = None
@@ -329,13 +341,14 @@ class SFuzz:
                                  bytesize=bytesize,
                                  parity=parity,
                                  stopbits=stopbits,
-                                 rtscts=False,
-                                 dsrdtr=False,
-                                 xonxoff=False,
+                                 rtscts=rtscts,
+                                 dsrdtr=dsrdtr,
+                                 xonxoff=xonxoff,
                                  timeout=0.01,
                                  writeTimeout=0)
 
         self.flushInput()
+
 
     def get_tx(self, chunk_size):
         def rand_ascii(n):
@@ -344,11 +357,8 @@ class SFuzz:
                 for _ in range(n))
 
         if self.ascii:
-            if self.ascii_newline:
-                newline = random.choice(["\r", "\n", "\r\n"])
-            elif self.ascii_crnl:
-                newline = "\r\n"
-            if newline:
+            if self.ascii_newlines:
+                newline = random.choice(self.ascii_newlines)
                 ret = rand_ascii(chunk_size - len(newline)) + newline
             else:
                 ret = rand_ascii(chunk_size)
@@ -357,6 +367,38 @@ class SFuzz:
             return bytearray(
                 [random.randint(0, 255) for _i in range(chunk_size)])
 
+    def txrx(self, tx, verbose=False):
+        self.ser.write(tx)
+        # print("flushing")
+        # 1) this takes a long time
+        # 2) takes a long time after a few passes
+        # implies poor implementation not actually flushing :(
+        self.verbose and print("flush tx")
+        self.ser.flush()
+        self.verbose and print("flush rx")
+        rx = self.flushInput()
+        if verbose:
+            hexdump(tx, label="tx %u" % len(tx))
+            hexdump(rx, label="rx %u" % len(rx))
+            # print("# rx = %s" % bytes2AnonArray(rx))
+            # print("sf.txrx(%s)" % bytes2AnonArray(tx))
+        return rx
+
+    def ser_init(self):
+        baudrate = random.choice(self.baudrates)
+        parity = random.choice(self.parities)
+        stopbits = random.choice(self.stopbitss)
+        print("")
+        print("baudrate=%s, parity=%s, stopbits=%s" %
+              (baudrate, parity, stopbits))
+        self.mkser(baudrate=baudrate, parity=parity, stopbits=stopbits,
+             rtscts=random.choice(self.rtsctss),
+             dsrdtr=random.choice(self.dsrdtrs),
+             xonxoff=random.choice(self.xonxoffs))
+
+    def loop_begin(self):
+        pass
+
     def run(self):
         print("Starting")
         print("ASCII: %s" % self.ascii)
@@ -364,7 +406,7 @@ class SFuzz:
         print("Parities: %u" % len(self.parities))
         print("Stopbits: %u" % len(self.stopbitss))
 
-        itr = 0
+        self.itr = 0
         open_interval = 10
         print_interval = 80
         tx_bytes = 0
@@ -373,36 +415,24 @@ class SFuzz:
         parity = None
         stopbits = None
         while True:
-            if itr % open_interval == 0:
-                baudrate = random.choice(self.baudrates)
-                parity = random.choice(self.parities)
-                stopbits = random.choice(self.stopbitss)
-                print("")
-                print("baudrate=%s, parity=%s, stopbits=%s" %
-                      (baudrate, parity, stopbits))
-                self.mkser(baudrate=baudrate, parity=parity, stopbits=stopbits)
+            if self.itr % open_interval == 0:
+                self.ser_init()
 
-            if itr % print_interval == 0:
+            if self.itr % print_interval == 0:
                 print("")
                 print("iter %03u tx bytes: %u, rx bytes %u" %
-                      (itr, tx_bytes, rx_bytes))
+                      (self.itr, tx_bytes, rx_bytes))
             sys.stdout.write(".")
             sys.stdout.flush()
-            itr += 1
+            self.itr += 1
+            self.chunk_size = random.randint(1, 32)
+            self.loop_begin()
             tx = self.get_tx(self.chunk_size)
             self.verbose and print("iter %04u, data(%u) = %s" %
-                                   (itr, len(tx), tx.hex()))
+                                   (self.itr, len(tx), tx.hex()))
             self.verbose and print("writing")
-            self.ser.write(tx)
+            rx = self.txrx(tx)
             tx_bytes += len(tx)
-            # print("flushing")
-            # 1) this takes a long time
-            # 2) takes a long time after a few passes
-            # implies poor implementation not actually flushing :(
-            self.verbose and print("flush tx")
-            self.ser.flush()
-            self.verbose and print("flush rx")
-            rx = self.flushInput()
             if not len(rx):
                 continue
             rx_bytes += len(rx)
@@ -411,28 +441,52 @@ class SFuzz:
                   (baudrate, parity, stopbits))
             hexdump(tx, label="tx %u" % len(tx))
             hexdump(rx, label="rx %u" % len(rx))
-
-
-def run(port=None, verbose=False, log_dir="log"):
-    sf = SFuzz(port=port, verbose=verbose)
-    sf.run()
+            print("# rx = %s" % bytes2AnonArray(rx))
+            print("sf.txrx(%s)" % bytes2AnonArray(tx))
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Decode')
-    parser.add_argument('--port', default=None, help='Serial port')
-    parser.add_argument('--dir', default=None, help='Output dir')
-    parser.add_argument('--postfix', default=None, help='')
-    parser.add_argument('--verbose', action="store_true")
+    parser = argparse.ArgumentParser(description="Try to figure out an undocumented serial protocol")
+    parser.add_argument("--port", default=None, help="Serial port")
+    parser.add_argument("--dir", default=None, help="Output dir")
+    parser.add_argument("--postfix", default=None, help="")
+    parser.add_argument("--baudrate", default=None, type=int, help="Set baudrate")
+    parser.add_argument("--aggressive", action="store_true", help="Use less common serial modes")
+    add_bool_arg(parser, "--ascii", help="Only send ASCII chars")
+    add_bool_arg(parser, "--timedate", default=False, help="Display prefix")
+    parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
+
+    baudrates = None
+    parities = None
+    stopbitss = None
+
+    if args.baudrate:
+        baudrates = [int(args.baudrate)]
+
+    if args.aggressive:
+        parities = [
+                    serial.PARITY_NONE, serial.PARITY_EVEN, serial.PARITY_ODD,
+                    serial.PARITY_MARK, serial.PARITY_SPACE
+                ]
+        stopbitss = [
+                    serial.STOPBITS_ONE, serial.STOPBITS_ONE_POINT_FIVE,
+                    serial.STOPBITS_TWO
+                ]
 
     log_dir = args.dir
     if log_dir is None:
         log_dir = default_date_dir("log", "", args.postfix)
     mkdir_p(log_dir)
-    _dt = logwt(log_dir, 'log.txt', shift_d=False)
+    _dt = logwt(log_dir, 'log.txt', shift_d=False, stampout=args.timedate)
 
-    run(port=args.port, verbose=args.verbose)
+    sf = SFuzz(port=args.port,
+        ascii=args.ascii,
+        baudrates=baudrates,
+        parities=parities,
+        stopbitss=stopbitss,
+        verbose=args.verbose)
+    sf.run()
 
 
 if __name__ == "__main__":
