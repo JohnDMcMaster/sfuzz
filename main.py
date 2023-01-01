@@ -258,12 +258,40 @@ class SFuzz:
             verbose = os.getenv("VERBOSE", "N") == "Y"
         self.verbose and print("port: %s" % self.port)
         self.ser = None
-        self.ascii = False
+        self.ascii = True
         # \r\n
         self.ascii_crnl = False
         self.ascii_newline = True
+        self.chunk_size = random.randint(1, 32)
+        if 0:
+            self.baudrates = [9600, 19200, 38400, 115200]
+            # rx all 0s
+            self.baudrates = [115200]
+            # some suspicous echos back
+            self.baudrates = [9600]
+            # like corrupted values back
+            self.baudrates = [19200]
+            # like corrupted values back
+            self.baudrates = [38400]
 
-    def flushInput(self, timeout=0.1, max_size=16):
+            self.ascii = False
+            # pretty sure this is right
+            self.baudrates = [9600]
+
+            self.parities = [serial.PARITY_NONE]
+            self.stopbitss = [serial.STOPBITS_ONE]
+        else:
+            self.baudrates = [9600, 19200, 38400, 115200]
+            self.parities = [
+                        serial.PARITY_NONE, serial.PARITY_EVEN, serial.PARITY_ODD,
+                        serial.PARITY_MARK, serial.PARITY_SPACE
+                    ]
+            self.stopbitss = [
+                        serial.STOPBITS_ONE, serial.STOPBITS_ONE_POINT_FIVE,
+                        serial.STOPBITS_TWO
+                    ]
+
+    def flushInput(self, timeout=0.1, max_size=1024):
         # Try to get rid of previous command in progress, if any
         tlast = time.time()
         ret = bytearray()
@@ -332,6 +360,9 @@ class SFuzz:
     def run(self):
         print("Starting")
         print("ASCII: %s" % self.ascii)
+        print("Baudrates: %u" % len(self.baudrates))
+        print("Parities: %u" % len(self.parities))
+        print("Stopbits: %u" % len(self.stopbitss))
 
         itr = 0
         open_interval = 10
@@ -343,15 +374,9 @@ class SFuzz:
         stopbits = None
         while True:
             if itr % open_interval == 0:
-                baudrate = random.choice([9600, 19200, 38400, 115200])
-                parity = random.choice([
-                    serial.PARITY_NONE, serial.PARITY_EVEN, serial.PARITY_ODD,
-                    serial.PARITY_MARK, serial.PARITY_SPACE
-                ])
-                stopbits = random.choice([
-                    serial.STOPBITS_ONE, serial.STOPBITS_ONE_POINT_FIVE,
-                    serial.STOPBITS_TWO
-                ])
+                baudrate = random.choice(self.baudrates)
+                parity = random.choice(self.parities)
+                stopbits = random.choice(self.stopbitss)
                 print("")
                 print("baudrate=%s, parity=%s, stopbits=%s" %
                       (baudrate, parity, stopbits))
@@ -364,9 +389,7 @@ class SFuzz:
             sys.stdout.write(".")
             sys.stdout.flush()
             itr += 1
-            chunk_size = random.randint(1, 16)
-            chunk_size = 128
-            tx = self.get_tx(chunk_size)
+            tx = self.get_tx(self.chunk_size)
             self.verbose and print("iter %04u, data(%u) = %s" %
                                    (itr, len(tx), tx.hex()))
             self.verbose and print("writing")
@@ -380,15 +403,14 @@ class SFuzz:
             self.ser.flush()
             self.verbose and print("flush rx")
             rx = self.flushInput()
-            if not rx:
+            if not len(rx):
                 continue
             rx_bytes += len(rx)
             print("")
-            rx = bytearray()
             print("baudrate=%s, parity=%s, stopbits=%s" %
                   (baudrate, parity, stopbits))
-            hexdump(tx, label="tx")
-            hexdump(rx, label="rx")
+            hexdump(tx, label="tx %u" % len(tx))
+            hexdump(rx, label="rx %u" % len(rx))
 
 
 def run(port=None, verbose=False, log_dir="log"):
